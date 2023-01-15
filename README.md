@@ -6,7 +6,9 @@ It is based on the driver from the [TinyGo](https://tinygo.org) [driver package]
 
 ## Installing
 
-TBD
+```shell
+go get github.com/nwhirschfeld/periph.io-st7789
+```
 
 ## How to use
 
