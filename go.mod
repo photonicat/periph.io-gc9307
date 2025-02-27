@@ -1,4 +1,4 @@
-module github.com/nwhirschfeld/periph.io-st7789
+module github.com/c2h2/periph.io-st7789
 
 go 1.19
 
