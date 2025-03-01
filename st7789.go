@@ -351,7 +351,7 @@ func (d *Device) SetRotation(rotation Rotation) {
 		break
 	case 2:
 		d.rowOffset = 0
-		d.columnOffset = 0
+		d.columnOffset = d.columnOffsetCfg
 		break
 	case 3:
 		madctl = MADCTL_MX | MADCTL_MV
