@@ -28,6 +28,7 @@ type Device struct {
 	resetPin        gpio.PinOut
 	csPin           gpio.PinOut
 	blPin           gpio.PinOut
+	usdCSpin        bool
 	width           int16
 	height          int16
 	columnOffsetCfg int16
@@ -50,6 +51,7 @@ type Config struct {
 	ColumnOffset int16
 	FrameRate    FrameRate
 	VSyncLines   int16
+	UseCS        bool
 }
 
 // New creates a new ST7789 connection. The SPI wire must already be configured.
@@ -75,7 +77,7 @@ func (d *Device) Configure(cfg Config) {
 	} else {
 		d.height = 240
 	}
-
+	d.usdCSpin = cfg.UseCS
 	d.rotation = cfg.Rotation
 	d.rowOffsetCfg = cfg.RowOffset
 	d.columnOffsetCfg = cfg.ColumnOffset
@@ -100,18 +102,18 @@ func (d *Device) Configure(cfg Config) {
 
 	// Reset the device
 	d.resetPin.Out(gpio.High)
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(5 * time.Millisecond)
 	d.resetPin.Out(gpio.Low)
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 	d.resetPin.Out(gpio.High)
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(5 * time.Millisecond)
 
 	// Common initialization
 	d.Command(SWRESET)                 // Soft reset
-	time.Sleep(150 * time.Millisecond) //
+	time.Sleep(10 * time.Millisecond) //
 
 	d.Command(SLPOUT)                  // Exit sleep mode
-	time.Sleep(500 * time.Millisecond) //
+	time.Sleep(10 * time.Millisecond) //
 
 	// Memory initialization
 	d.Command(COLMOD)                 // Set color mode
@@ -124,16 +126,18 @@ func (d *Device) Configure(cfg Config) {
 	d.FillScreen(color.RGBA{0, 0, 0, 255}) // Clear screen
 
 	// Framerate
-	d.Command(FRCTRL2)         // Frame rate for normal mode
-	d.Data(uint8(d.frameRate)) // Default is 60Hz
+	//d.Command(FRCTRL2)         // Frame rate for normal mode
+	//d.Data(uint8(d.frameRate)) // Default is 60Hz
 
 	// Frame vertical sync and "porch"
 	//
 	// Front and back porch controls vertical scanline sync time before and after
 	// a frame, where memory can be safely written without tearing.
 	//
+	/* // photonicat2 does not need this
 	fp := uint8(d.vSyncLines / 2)         // Split the desired pause half and half
 	bp := uint8(d.vSyncLines - int16(fp)) // between front and back porch.
+
 
 	d.Command(PORCTRL)
 	d.Data(bp)   // Back porch 5bit     (0x7F max 0x08 default)
@@ -141,6 +145,7 @@ func (d *Device) Configure(cfg Config) {
 	d.Data(0x00) // Seprarate porch     (TODO: what is this?)
 	d.Data(0x22) // Idle mode porch     (4bit-back 4bit-front 0x22 default)
 	d.Data(0x22) // Partial mode porch  (4bit-back 4bit-front 0x22 default)
+	*/
 
 	// Ready to display
 	d.Command(INVON)                  // Inversion ON
@@ -383,9 +388,13 @@ func (d *Device) Tx(data []byte, isCommand bool) {
 	} else {
 		d.dcPin.Out(gpio.High)
 	}
-	d.csPin.Out(gpio.Low)
+	if(d.usdCSpin){
+		d.csPin.Out(gpio.Low)
+	}
 	d.bus.Tx(data, nil)
-	d.csPin.Out(gpio.High)
+	if(d.usdCSpin){
+		d.csPin.Out(gpio.High)
+	}
 }
 
 // Rx reads data from the display
