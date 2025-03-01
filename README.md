@@ -7,7 +7,7 @@ It is based on the driver from the [TinyGo](https://tinygo.org) [driver package]
 ## Installing
 
 ```shell
-go get github.com/nwhirschfeld/periph.io-st7789
+go get github.com/c2h2/periph.io-st7789
 ```
 
 ## How to use
@@ -18,7 +18,7 @@ The following example displays a PNG file on the display. (Tested with an [Orang
 package main
 
 import (
-	st7789 "github.com/nwhirschfeld/periph.io-st7789"
+	st7789 "github.com/c2h2/periph.io-st7789"
 	"image"
 	"image/color"
 	"image/png"
@@ -70,7 +70,7 @@ func main() {
 
 	// test display
 	display.EnableBacklight(true)
-	displayPNG(display, 0, 0, "~/example.png")
+	displayPNG(display, 0, 0, "example.png")
 }
 
 func displayPNG(display st7789.Device, x int, y int, filePath string) {
