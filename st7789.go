@@ -10,7 +10,9 @@ import (
 	"math"
 	"periph.io/x/conn/v3/gpio"
 	"periph.io/x/conn/v3/spi"
+	"image"
 	"time"
+	"os"
 
 	"errors"
 )
@@ -67,6 +69,14 @@ func New(bus spi.Conn, resetPin, dcPin, csPin, blPin gpio.PinOut) Device {
 
 // Configure initializes the display with default configuration
 func (d *Device) Configure(cfg Config) {
+	//touch a file to indicate that the display is initialized
+	initializedFile := "/tmp/display_initialized"
+
+	isInitialized := false
+	if _, err := os.Stat(initializedFile); err == nil {
+		isInitialized = true
+	}
+
 	if cfg.Width != 0 {
 		d.width = cfg.Width
 	} else {
@@ -100,28 +110,32 @@ func (d *Device) Configure(cfg Config) {
 	}
 	d.batchLength += d.batchLength & 1
 
-	// Reset the device
-	d.resetPin.Out(gpio.High)
-	time.Sleep(5 * time.Millisecond)
-	d.resetPin.Out(gpio.Low)
-	time.Sleep(10 * time.Millisecond)
-	d.resetPin.Out(gpio.High)
-	time.Sleep(5 * time.Millisecond)
+	//check if the display is already initialized
+	
+	if !isInitialized {
+		// Reset the device
+		d.resetPin.Out(gpio.High)
+		time.Sleep(5 * time.Millisecond)
+		d.resetPin.Out(gpio.Low)
+		time.Sleep(10 * time.Millisecond)
+		d.resetPin.Out(gpio.High)
+		time.Sleep(5 * time.Millisecond)
 
-	// Common initialization
-	d.Command(SWRESET)                 // Soft reset
-	time.Sleep(10 * time.Millisecond) //
+		// Common initialization
+		d.Command(SWRESET)                 // Soft reset
+		time.Sleep(10 * time.Millisecond) //
+		d.Command(SLPOUT)                  // Exit sleep mode
+		time.Sleep(10 * time.Millisecond) //
 
-	d.Command(SLPOUT)                  // Exit sleep mode
-	time.Sleep(10 * time.Millisecond) //
 
-	// Memory initialization
-	d.Command(COLMOD)                 // Set color mode
-	d.Data(0x55)                      //   16-bit color
-	time.Sleep(10 * time.Millisecond) //
-
+		// Memory initialization
+		d.Command(COLMOD)                 // Set color mode
+		d.Data(0x55)                      //   16-bit color
+		time.Sleep(10 * time.Millisecond) //
+	}
+	
 	d.SetRotation(d.rotation) // Memory orientation
-
+	
 	d.setWindow(0, 0, d.width, d.height)   // Full draw window
 	d.FillScreen(color.RGBA{0, 0, 0, 255}) // Clear screen
 
@@ -146,18 +160,22 @@ func (d *Device) Configure(cfg Config) {
 	d.Data(0x22) // Idle mode porch     (4bit-back 4bit-front 0x22 default)
 	d.Data(0x22) // Partial mode porch  (4bit-back 4bit-front 0x22 default)
 	*/
+	if !isInitialized {
+		// Ready to display
+		d.Command(INVON)                  // Inversion ON
+		time.Sleep(10 * time.Millisecond) //
 
-	// Ready to display
-	d.Command(INVON)                  // Inversion ON
-	time.Sleep(10 * time.Millisecond) //
+		d.Command(NORON)                  // Normal mode ON
+		time.Sleep(10 * time.Millisecond) //
 
-	d.Command(NORON)                  // Normal mode ON
-	time.Sleep(10 * time.Millisecond) //
+		d.Command(DISPON)                 // Screen ON
+		time.Sleep(10 * time.Millisecond) //
 
-	d.Command(DISPON)                 // Screen ON
-	time.Sleep(10 * time.Millisecond) //
+		d.blPin.Out(gpio.High) // Backlight ON
+	}
 
-	d.blPin.Out(gpio.High) // Backlight ON
+	//touch a file to indicate that the display is initialized
+	os.Create(initializedFile)
 }
 
 // Sync waits for the display to hit the next VSYNC pause
@@ -314,6 +332,60 @@ func (d *Device) FillRectangleWithBuffer(x, y, width, height int16, buffer []col
 	}
 	return nil
 }
+
+// FillRectangleWithImage fills a rectangle on the display using an *image.RGBA as the framebuffer.
+// It assumes that fb's dimensions (Dx x Dy) exactly match the given width and height.
+func (d *Device) FillRectangleWithImage(x, y, width, height int16, fb *image.RGBA) error {
+	// Get the display size.
+	i, j := d.Size()
+	if x < 0 || y < 0 || width <= 0 || height <= 0 ||
+		x >= i || (x+width) > i || y >= j || (y+height) > j {
+		return errors.New("rectangle coordinates outside display area")
+	}
+
+	// Verify that the image dimensions match the specified rectangle size.
+	if int16(fb.Bounds().Dx()) != width || int16(fb.Bounds().Dy()) != height {
+		return errors.New("image dimensions do not match rectangle size")
+	}
+
+	// Set the display window to the target rectangle.
+	d.setWindow(x, y, width, height)
+
+	// Total number of pixels in the rectangle.
+	totalPixels := int32(width) * int32(height)
+	// Create a temporary buffer to hold pixel data in RGB565 format.
+	data := make([]uint8, d.batchLength*2)
+	offset := int32(0)
+
+	// Process pixels in batches.
+	for totalPixels > 0 {
+		// For each batch, iterate over d.batchLength pixels (or the remaining pixels).
+		for i := int32(0); i < d.batchLength; i++ {
+			if offset+i < int32(width)*int32(height) {
+				// Compute the row and column for the current pixel.
+				row := int((offset + i) / int32(width))
+				col := int((offset + i) % int32(width))
+				// Get the pixel color from the image.
+				pixel := fb.RGBAAt(col, row)
+				// Convert to RGB565.
+				c565 := RGBATo565(pixel)
+				// Store the high and low bytes.
+				data[i*2] = uint8(c565 >> 8)
+				data[i*2+1] = uint8(c565)
+			}
+		}
+		// Transmit the batch.
+		if totalPixels >= d.batchLength {
+			d.Tx(data, false)
+		} else {
+			d.Tx(data[:totalPixels*2], false)
+		}
+		totalPixels -= d.batchLength
+		offset += d.batchLength
+	}
+	return nil
+}
+
 
 // DrawFastVLine draws a vertical line faster than using SetPixel
 func (d *Device) DrawFastVLine(x, y0, y1 int16, c color.RGBA) {
