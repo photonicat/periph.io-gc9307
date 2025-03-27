@@ -1,4 +1,4 @@
-package st7789
+package gc9307
 
 // Registers
 const (
