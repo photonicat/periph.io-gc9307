@@ -1,24 +1,23 @@
-# periph.io driver for ST7789 displays
+# periph.io driver for gc9307 displays
 
-This package provides a hardware driver for ST7789 displays, that can be used with [periph.io](https://periph.io/).
+This package provides a hardware driver for gc9307 displays, that can be used with [periph.io](https://periph.io/).
 It is based on the driver from the [TinyGo](https://tinygo.org) [driver package](https://github.com/tinygo-org/drivers).
 
 
 ## Installing
 
 ```shell
-go get github.com/c2h2/periph.io-st7789
+go get github.com/photonicat/periph.io-gc9307
 ```
 
 ## How to use
 
-The following example displays a PNG file on the display. (Tested with an [Orange Pi Zero](http://www.orangepi.org/html/hardWare/computerAndMicrocontrollers/details/Orange-Pi-Zero-LTS.html) and [Pico LCD 2](https://www.waveshare.com/wiki/Pico-LCD-2))
 
 ```go
 package main
 
 import (
-	st7789 "github.com/c2h2/periph.io-st7789"
+	gc9307 "github.com/photonicat/periph.io-gc9307"
 	"image"
 	"image/color"
 	"image/png"
@@ -61,11 +60,11 @@ func main() {
 	display.Configure(st7789.Config{
 		Width:        240,
 		Height:       320,
-		Rotation:     st7789.ROTATION_90,
+		Rotation:     gc9307.ROTATION_90,
 		RowOffset:    0,
 		ColumnOffset: 0,
-		FrameRate:    st7789.FRAMERATE_60,
-		VSyncLines:   st7789.MAX_VSYNC_SCANLINES,
+		FrameRate:    gc9307.FRAMERATE_60,
+		VSyncLines:   gc9307.MAX_VSYNC_SCANLINES,
 	})
 
 	// test display
@@ -73,7 +72,7 @@ func main() {
 	displayPNG(display, 0, 0, "example.png")
 }
 
-func displayPNG(display st7789.Device, x int, y int, filePath string) {
+func displayPNG(display gc9307.Device, x int, y int, filePath string) {
 	// read and parse image file
 	image.RegisterFormat("png", "png", png.Decode, png.DecodeConfig)
 	imgFile, err := os.Open(filePath)
