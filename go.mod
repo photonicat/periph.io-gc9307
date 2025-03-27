@@ -1,4 +1,4 @@
-module github.com/c2h2/periph.io-st7789
+module github.com/photonicat/periph.io-gc9307
 
 go 1.19
 
