@@ -51,13 +51,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	display := st7789.New(conn,
+	display := gc9307.New(conn,
 		gpioreg.ByName("GPIO3"),
 		gpioreg.ByName("GPIO0"),
 		gpioreg.ByName("GPIO13"),
 		gpioreg.ByName("GPIO12"))
 
-	display.Configure(st7789.Config{
+	display.Configure(gc9307.Config{
 		Width:        240,
 		Height:       320,
 		Rotation:     gc9307.ROTATION_90,
