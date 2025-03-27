@@ -1,9 +1,5 @@
-// Package st7789 implements a driver for the ST7789 TFT displays, it comes in various screen sizes.
-//
-// Datasheets: https://cdn-shop.adafruit.com/product-files/3787/3787_tft_QT154H2201__________20190228182902.pdf
-//
-//	http://www.newhavendisplay.com/appnotes/datasheets/LCDs/ST7789V.pdf
-package st7789 // import "tinygo.org/x/drivers/st7789"
+// Package gc9307 implements a driver for the gc9307 TFT displays, it comes in various screen sizes.
+package gc9307 
 
 import (
 	"image/color"
@@ -56,7 +52,7 @@ type Config struct {
 	UseCS        bool
 }
 
-// New creates a new ST7789 connection. The SPI wire must already be configured.
+// New creates a new gc9307 connection. The SPI wire must already be configured.
 func New(bus spi.Conn, resetPin, dcPin, csPin, blPin gpio.PinOut) Device {
 	return Device{
 		bus:      bus,
@@ -70,7 +66,7 @@ func New(bus spi.Conn, resetPin, dcPin, csPin, blPin gpio.PinOut) Device {
 // Configure initializes the display with default configuration
 func (d *Device) Configure(cfg Config) {
 	//touch a file to indicate that the display is initialized
-	initializedFile := "/tmp/display_initialized"
+	initializedFile := "/tmp/pcat_display_initialized"
 
 	isInitialized := false
 	if _, err := os.Stat(initializedFile); err == nil {
@@ -115,11 +111,11 @@ func (d *Device) Configure(cfg Config) {
 	if !isInitialized {
 		// Reset the device
 		d.resetPin.Out(gpio.High)
-		time.Sleep(5 * time.Millisecond)
-		d.resetPin.Out(gpio.Low)
 		time.Sleep(10 * time.Millisecond)
+		d.resetPin.Out(gpio.Low)
+		time.Sleep(50 * time.Millisecond)
 		d.resetPin.Out(gpio.High)
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 
 		// Common initialization
 		d.Command(SWRESET)                 // Soft reset
@@ -139,6 +135,7 @@ func (d *Device) Configure(cfg Config) {
 	d.setWindow(0, 0, d.width, d.height)   // Full draw window
 	d.FillScreen(color.RGBA{0, 0, 0, 255}) // Clear screen
 
+	
 	// Framerate
 	//d.Command(FRCTRL2)         // Frame rate for normal mode
 	//d.Data(uint8(d.frameRate)) // Default is 60Hz
@@ -160,9 +157,11 @@ func (d *Device) Configure(cfg Config) {
 	d.Data(0x22) // Idle mode porch     (4bit-back 4bit-front 0x22 default)
 	d.Data(0x22) // Partial mode porch  (4bit-back 4bit-front 0x22 default)
 	*/
-	if !isInitialized {
+	if true {
+		d.Command(INVOFF)
+		//time.Sleep(10 * time.Millisecond)
 		// Ready to display
-		d.Command(INVON)                  // Inversion ON
+		//d.Command(INVOFF)                  // Inversion ON
 		time.Sleep(10 * time.Millisecond) //
 
 		d.Command(NORON)                  // Normal mode ON
@@ -276,7 +275,7 @@ func (d *Device) FillRectangle(x, y, width, height int16, c color.RGBA) error {
 		return errors.New("rectangle coordinates outside display area")
 	}
 	d.setWindow(x, y, width, height)
-	c565 := RGBATo565(c)
+	c565 := RGBATo565BGR(c)
 	c1 := uint8(c565 >> 8)
 	c2 := uint8(c565)
 
@@ -315,7 +314,7 @@ func (d *Device) FillRectangleWithBuffer(x, y, width, height int16, buffer []col
 	for k > 0 {
 		for i := int32(0); i < d.batchLength; i++ {
 			if offset+i < int32(len(buffer)) {
-				c565 := RGBATo565(buffer[offset+i])
+				c565 := RGBATo565BGR(buffer[offset+i])
 				c1 := uint8(c565 >> 8)
 				c2 := uint8(c565)
 				data[i*2] = c1
@@ -368,7 +367,7 @@ func (d *Device) FillRectangleWithImage(x, y, width, height int16, fb *image.RGB
 				// Get the pixel color from the image.
 				pixel := fb.RGBAAt(col, row)
 				// Convert to RGB565.
-				c565 := RGBATo565(pixel)
+				c565 := RGBATo565BGR(pixel)
 				// Store the high and low bytes.
 				data[i*2] = uint8(c565 >> 8)
 				data[i*2+1] = uint8(c565)
@@ -427,6 +426,7 @@ func (d *Device) SetRotation(rotation Rotation) {
 		d.columnOffset = d.rowOffsetCfg
 		break
 	case 2:
+		madctl = MADCTL_MX
 		d.rowOffset = 0
 		d.columnOffset = d.columnOffsetCfg
 		break
@@ -551,7 +551,12 @@ func (d *Device) StopScroll() {
 // RGBATo565 converts a color.RGBA to uint16 used in the display
 func RGBATo565(c color.RGBA) uint16 {
 	r, g, b, _ := c.RGBA()
-	return uint16((r & 0xF800) +
+	return uint16((r & 0xF800) + 
 		((g & 0xFC00) >> 5) +
 		((b & 0xF800) >> 11))
+}
+
+func RGBATo565BGR(c color.RGBA) uint16 {
+    r, g, b, _ := c.RGBA()
+    return uint16((b & 0xF800) + ((g & 0xFC00) >> 5) + ((r & 0xF800) >> 11))
 }
