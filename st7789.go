@@ -38,6 +38,8 @@ type Device struct {
 	batchLength     int32
 	isBGR           bool
 	vSyncLines      int16
+	buffer          []uint8
+	initialized     bool
 }
 
 // Config is the configuration for the display
@@ -105,6 +107,8 @@ func (d *Device) Configure(cfg Config) {
 		d.batchLength = int32(d.height)
 	}
 	d.batchLength += d.batchLength & 1
+	
+	d.buffer = make([]uint8, d.batchLength*2)
 
 	//check if the display is already initialized
 	
@@ -279,17 +283,16 @@ func (d *Device) FillRectangle(x, y, width, height int16, c color.RGBA) error {
 	c1 := uint8(c565 >> 8)
 	c2 := uint8(c565)
 
-	data := make([]uint8, d.batchLength*2)
 	for i := int32(0); i < d.batchLength; i++ {
-		data[i*2] = c1
-		data[i*2+1] = c2
+		d.buffer[i*2] = c1
+		d.buffer[i*2+1] = c2
 	}
 	j := int32(width) * int32(height)
 	for j > 0 {
 		if j >= d.batchLength {
-			d.Tx(data, false)
+			d.Tx(d.buffer, false)
 		} else {
-			d.Tx(data[:j*2], false)
+			d.Tx(d.buffer[:j*2], false)
 		}
 		j -= d.batchLength
 	}
@@ -309,7 +312,6 @@ func (d *Device) FillRectangleWithBuffer(x, y, width, height int16, buffer []col
 	d.setWindow(x, y, width, height)
 
 	k := int32(width) * int32(height)
-	data := make([]uint8, d.batchLength*2)
 	offset := int32(0)
 	for k > 0 {
 		for i := int32(0); i < d.batchLength; i++ {
@@ -317,14 +319,14 @@ func (d *Device) FillRectangleWithBuffer(x, y, width, height int16, buffer []col
 				c565 := RGBATo565BGR(buffer[offset+i])
 				c1 := uint8(c565 >> 8)
 				c2 := uint8(c565)
-				data[i*2] = c1
-				data[i*2+1] = c2
+				d.buffer[i*2] = c1
+				d.buffer[i*2+1] = c2
 			}
 		}
 		if k >= d.batchLength {
-			d.Tx(data, false)
+			d.Tx(d.buffer, false)
 		} else {
-			d.Tx(data[:k*2], false)
+			d.Tx(d.buffer[:k*2], false)
 		}
 		k -= d.batchLength
 		offset += d.batchLength
@@ -352,8 +354,6 @@ func (d *Device) FillRectangleWithImage(x, y, width, height int16, fb *image.RGB
 
 	// Total number of pixels in the rectangle.
 	totalPixels := int32(width) * int32(height)
-	// Create a temporary buffer to hold pixel data in RGB565 format.
-	data := make([]uint8, d.batchLength*2)
 	offset := int32(0)
 
 	// Process pixels in batches.
@@ -369,15 +369,15 @@ func (d *Device) FillRectangleWithImage(x, y, width, height int16, fb *image.RGB
 				// Convert to RGB565.
 				c565 := RGBATo565BGR(pixel)
 				// Store the high and low bytes.
-				data[i*2] = uint8(c565 >> 8)
-				data[i*2+1] = uint8(c565)
+				d.buffer[i*2] = uint8(c565 >> 8)
+				d.buffer[i*2+1] = uint8(c565)
 			}
 		}
 		// Transmit the batch.
 		if totalPixels >= d.batchLength {
-			d.Tx(data, false)
+			d.Tx(d.buffer, false)
 		} else {
-			d.Tx(data[:totalPixels*2], false)
+			d.Tx(d.buffer[:totalPixels*2], false)
 		}
 		totalPixels -= d.batchLength
 		offset += d.batchLength
@@ -483,17 +483,11 @@ func (d *Device) Rx(command uint8, data []byte) {
 }
 
 func sendCommand(bus spi.Conn, command byte) (byte, error) {
-	answer := []byte{0}
-	err := bus.Tx(
-		[]byte{command},
-		[]byte(""),
-	)
+	err := bus.Tx([]byte{command}, nil)
 	if err != nil {
 		return 0, err
 	}
-
-	return answer[0], nil
-
+	return 0, nil
 }
 
 // Size returns the current size of the display.
@@ -550,13 +544,18 @@ func (d *Device) StopScroll() {
 
 // RGBATo565 converts a color.RGBA to uint16 used in the display
 func RGBATo565(c color.RGBA) uint16 {
-	r, g, b, _ := c.RGBA()
-	return uint16((r & 0xF800) + 
-		((g & 0xFC00) >> 5) +
-		((b & 0xF800) >> 11))
+	// Convert from 8-bit color channels to 5/6-bit format for RGB565
+	r := (uint16(c.R) >> 3) & 0x1F  // 5 bits for red
+	g := (uint16(c.G) >> 2) & 0x3F  // 6 bits for green
+	b := (uint16(c.B) >> 3) & 0x1F  // 5 bits for blue
+	return (r << 11) | (g << 5) | b
 }
 
+// RGBATo565BGR converts a color.RGBA to uint16 used in the display (BGR format)
 func RGBATo565BGR(c color.RGBA) uint16 {
-    r, g, b, _ := c.RGBA()
-    return uint16((b & 0xF800) + ((g & 0xFC00) >> 5) + ((r & 0xF800) >> 11))
+	// Convert from 8-bit color channels to 5/6-bit format for BGR565
+	r := (uint16(c.R) >> 3) & 0x1F  // 5 bits for red
+	g := (uint16(c.G) >> 2) & 0x3F  // 6 bits for green
+	b := (uint16(c.B) >> 3) & 0x1F  // 5 bits for blue
+	return (b << 11) | (g << 5) | r
 }
