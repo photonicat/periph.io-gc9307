@@ -15,6 +15,7 @@ import (
 	"errors"
 )
 
+
 // Rotation controls the rotation used by the display.
 type Rotation uint8
 
@@ -55,6 +56,8 @@ type Device struct {
 	rotation        Rotation
 	frameRate       FrameRate
 	batchLength     int32
+	dmaBuffer       []uint8  // Pre-allocated DMA buffer
+	commandBuffer   []uint8  // Pre-allocated command buffer
 	isBGR           bool
 	vSyncLines      int16
 	buffer          []uint8
@@ -154,6 +157,19 @@ func (d *Device) Configure(cfg Config) {
 	d.batchLength += d.batchLength & 1
 	
 	d.buffer = make([]uint8, d.batchLength*2)
+	
+	// Pre-allocate DMA buffer to avoid runtime allocations
+	if d.useDMA {
+		dmaBatchLength := d.batchLength * 4 // Use 4x larger batches for DMA
+		maxBatchLength := d.maxTransferSize / 2 // 2 bytes per pixel
+		if dmaBatchLength > maxBatchLength {
+			dmaBatchLength = maxBatchLength
+		}
+		d.dmaBuffer = make([]uint8, dmaBatchLength*2)
+	}
+	
+	// Pre-allocate command buffer for optimized window setup
+	d.commandBuffer = make([]uint8, 11) // Max command sequence size
 
 	//check if the display is already initialized
 	
@@ -310,14 +326,41 @@ func (d *Device) setWindow(x, y, w, h int16) {
 	x += d.columnOffset
 	y += d.rowOffset
 	
-	// Optimize CS usage by batching commands in a single transaction
-	d.BeginTransaction()
-	d.TxWithCS([]uint8{CASET}, true, false)
-	d.TxWithCS([]uint8{uint8(x >> 8), uint8(x), uint8((x + w - 1) >> 8), uint8(x + w - 1)}, false, false)
-	d.TxWithCS([]uint8{RASET}, true, false)
-	d.TxWithCS([]uint8{uint8(y >> 8), uint8(y), uint8((y + h - 1) >> 8), uint8(y + h - 1)}, false, false)
-	d.TxWithCS([]uint8{RAMWR}, true, false)
-	d.EndTransaction()
+	// Optimized window setup with minimal SPI transactions
+	// Use pre-allocated buffer to avoid allocations
+	cmd := d.commandBuffer
+	
+	// CASET command + coordinates
+	cmd[0] = CASET
+	cmd[1] = uint8(x >> 8)
+	cmd[2] = uint8(x)
+	cmd[3] = uint8((x + w - 1) >> 8)
+	cmd[4] = uint8(x + w - 1)
+	
+	// Send CASET command and data in 2 transactions
+	d.dcPin.Out(gpio.Low)   // Command mode
+	d.bus.Tx(cmd[:1], nil)
+	d.dcPin.Out(gpio.High)  // Data mode
+	d.bus.Tx(cmd[1:5], nil)
+	
+	// RASET command + coordinates
+	cmd[0] = RASET
+	cmd[1] = uint8(y >> 8)
+	cmd[2] = uint8(y)
+	cmd[3] = uint8((y + h - 1) >> 8)
+	cmd[4] = uint8(y + h - 1)
+	
+	// Send RASET command and data in 2 transactions
+	d.dcPin.Out(gpio.Low)   // Command mode
+	d.bus.Tx(cmd[:1], nil)
+	d.dcPin.Out(gpio.High)  // Data mode
+	d.bus.Tx(cmd[1:5], nil)
+	
+	// RAMWR command
+	cmd[0] = RAMWR
+	d.dcPin.Out(gpio.Low)   // Command mode
+	d.bus.Tx(cmd[:1], nil)
+	d.dcPin.Out(gpio.High)  // Data mode for following pixel data
 }
 
 // FillRectangle fills a rectangle at a given coordinates with a color
@@ -376,8 +419,8 @@ func (d *Device) fillRectangleWithBufferDMA(width, height int16, buffer []color.
 		dmaBatchLength = maxBatchLength
 	}
 	
-	// Create larger buffer for DMA transfers
-	dmaBuffer := make([]uint8, dmaBatchLength*2)
+	// Use pre-allocated DMA buffer
+	dmaBuffer := d.dmaBuffer
 	
 	// Start CS transaction for the entire transfer
 	d.BeginTransaction()
@@ -475,8 +518,8 @@ func (d *Device) fillRectangleWithImageDMA(width, height int16, fb *image.RGBA) 
 		dmaBatchLength = maxBatchLength
 	}
 	
-	// Create larger buffer for DMA transfers
-	dmaBuffer := make([]uint8, dmaBatchLength*2)
+	// Use pre-allocated DMA buffer
+	dmaBuffer := d.dmaBuffer
 
 	// Start CS transaction for the entire transfer
 	d.BeginTransaction()

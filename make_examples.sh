@@ -44,6 +44,9 @@ if [ "$HOST_ARCH" = "x86_64" ]; then
     
     echo "Building benchmark..."
     cd examples/benchmark && env $BUILD_ENV CC=$CC go build -buildvcs=false -o ../../gc9307_benchmark . && cd ../..
+    
+    echo "Building color benchmark..."
+    cd examples/color_benchmark && env $BUILD_ENV CC=$CC go build -buildvcs=false -o ../../gc9307_color_benchmark . && cd ../..
 else
     echo -e "\n${YELLOW}Native compilation for ARM...${NC}"
     # Native compile on ARM system
@@ -52,6 +55,9 @@ else
     
     echo "Building benchmark..."
     cd examples/benchmark && go build -buildvcs=false -o ../../gc9307_benchmark . && cd ../..
+    
+    echo "Building color benchmark..."
+    cd examples/color_benchmark && go build -buildvcs=false -o ../../gc9307_color_benchmark . && cd ../..
 fi
 
 if [ $? -eq 0 ]; then
@@ -60,6 +66,7 @@ if [ $? -eq 0 ]; then
     echo "Built binaries:"
     echo "- ${BLUE}./gc9307_sample${NC}  - Basic sample program"
     echo "- ${BLUE}./gc9307_benchmark${NC} - Performance benchmark with 3x3 panning"
+    echo "- ${BLUE}./gc9307_color_benchmark${NC} - Color conversion performance test"
     echo ""
     echo "Sample Program Features:"
     echo "- Basic GC9307 display initialization"
@@ -79,7 +86,14 @@ if [ $? -eq 0 ]; then
     echo "- Usage: ./gc9307_benchmark [-nodma] [-duration=30] [-area=50]"
     echo "- Area sizes: 20% to 100% of display (default: 50%)"
     echo ""
-    echo "Make sure to run these on your target device with the GC9307 display connected."
+    echo "Color Benchmark Features:"
+    echo "- Compares old bit-operation vs new lookup table color conversion"
+    echo "- Tests 100,000 color conversions for accurate timing"
+    echo "- Shows speedup ratio and time savings per conversion"
+    echo "- Verifies correctness of optimized conversion"
+    echo "- Can run on any system (no display hardware required)"
+    echo ""
+    echo "Make sure to run display programs on your target device with the GC9307 display connected."
 else
     echo -e "${RED}Build failed. Check your Go installation and dependencies.${NC}"
     exit 1
