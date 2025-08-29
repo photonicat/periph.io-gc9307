@@ -10,8 +10,28 @@ It is based on the driver from the [TinyGo](https://tinygo.org) [driver package]
 go get github.com/photonicat/periph.io-gc9307
 ```
 
+## Examples
+
+See the complete working example in [examples/sample/main.go](examples/sample/main.go).
+
+## Compiling
+
+To compile the example for your target platform:
+
+```shell
+# Run the build script
+./make_examples.sh
+```
+
+This will automatically detect your host architecture and:
+- Cross-compile for OpenWrt aarch64 if running on x86_64
+- Native compile for ARM if running on ARM systems
+
+Make sure to place an `example.png` image file in the root directory for testing.
+
 ## How to use
 
+Basic usage pattern:
 
 ```go
 package main
