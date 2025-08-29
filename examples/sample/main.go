@@ -98,7 +98,7 @@ func main() {
 	}
 	defer spiPort.Close()
 
-	conn, err := spiPort.Connect(40000*physic.KiloHertz, spi.Mode0, 8)
+	conn, err := spiPort.Connect(180000*physic.KiloHertz, spi.Mode0, 8)
 	if err != nil {
 		log.Fatal(err)
 	}

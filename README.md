@@ -51,7 +51,7 @@ display.Configure(gc9307.Config{
 The benchmark program supports command-line options:
 
 ```shell
-# Run with DMA enabled (default)
+# Run with DMA enabled (default: 50% area, 30 seconds)
 ./gc9307_benchmark
 
 # Run without DMA (original settings)
@@ -60,8 +60,14 @@ The benchmark program supports command-line options:
 # Run for 60 seconds with DMA
 ./gc9307_benchmark -duration=60
 
-# Run for 10 seconds without DMA
-./gc9307_benchmark -nodma -duration=10
+# Run with 100% display area
+./gc9307_benchmark -area=100
+
+# Run small 20% area for high FPS
+./gc9307_benchmark -area=20
+
+# Run for 10 seconds without DMA, 75% area
+./gc9307_benchmark -nodma -duration=10 -area=75
 ```
 
 ## How to use
@@ -100,7 +106,7 @@ func main() {
 
 	defer spiPort.Close()
 
-	conn, err := spiPort.Connect(40000*physic.KiloHertz, spi.Mode0, 8)
+	conn, err := spiPort.Connect(80000*physic.KiloHertz, spi.Mode0, 8)
 
 	if err != nil {
 		log.Fatal(err)

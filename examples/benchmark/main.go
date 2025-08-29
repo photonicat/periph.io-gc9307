@@ -27,7 +27,9 @@ const (
 	LCD_HEIGHT      = 320
 	X_OFFSET        = 34
 	GRID_SIZE       = 3
-	CENTER_AREA     = 0.5 // 50% center area for panning
+	DEFAULT_AREA    = 50 // Default 50% area
+	MIN_AREA        = 20 // Minimum 20% area
+	MAX_AREA        = 100 // Maximum 100% area
 )
 
 type BenchmarkApp struct {
@@ -44,13 +46,19 @@ type BenchmarkApp struct {
 	maxPanX     int
 	maxPanY     int
 	useDMA      bool
+	areaPercent int
+	centerWidth int
+	centerHeight int
+	startX      int
+	startY      int
 }
 
-func NewBenchmarkApp(useDMA bool) *BenchmarkApp {
+func NewBenchmarkApp(useDMA bool, areaPercent int) *BenchmarkApp {
 	return &BenchmarkApp{
-		panDirX: 1,
-		panDirY: 1,
-		useDMA:  useDMA,
+		panDirX:     1,
+		panDirY:     1,
+		useDMA:      useDMA,
+		areaPercent: areaPercent,
 	}
 }
 
@@ -76,7 +84,7 @@ func (app *BenchmarkApp) InitializeDisplay() error {
 		Rotation:     gc9307.ROTATION_180,
 		RowOffset:    0,
 		ColumnOffset: X_OFFSET,
-		FrameRate:    gc9307.FRAMERATE_60,
+		FrameRate:    gc9307.FRAMERATE_111,
 		VSyncLines:   gc9307.MAX_VSYNC_SCANLINES,
 		UseCS:        false,
 		UseDMA:       app.useDMA,
@@ -114,15 +122,36 @@ func (app *BenchmarkApp) LoadImage(filePath string) error {
 		}
 	}
 
-	// Calculate maximum pan range for center 50% area
+	// Validate and clamp area percentage
+	if app.areaPercent < MIN_AREA {
+		app.areaPercent = MIN_AREA
+	} else if app.areaPercent > MAX_AREA {
+		app.areaPercent = MAX_AREA
+	}
+	
+	// Calculate display area dimensions based on percentage
+	areaRatio := float64(app.areaPercent) / 100.0
+	app.centerWidth = int(float64(LCD_WIDTH) * areaRatio)
+	app.centerHeight = int(float64(LCD_HEIGHT) * areaRatio)
+	
+	// Ensure area doesn't exceed display bounds
+	if app.centerWidth > LCD_WIDTH {
+		app.centerWidth = LCD_WIDTH
+	}
+	if app.centerHeight > LCD_HEIGHT {
+		app.centerHeight = LCD_HEIGHT
+	}
+	
+	// Calculate center position on display
+	app.startX = (LCD_WIDTH - app.centerWidth) / 2
+	app.startY = (LCD_HEIGHT - app.centerHeight) / 2
+	
+	// Calculate maximum pan range for the specified area
 	gridWidth := app.imageWidth * GRID_SIZE
 	gridHeight := app.imageHeight * GRID_SIZE
 	
-	centerWidth := int(float64(LCD_WIDTH) * CENTER_AREA)
-	centerHeight := int(float64(LCD_HEIGHT) * CENTER_AREA)
-	
-	app.maxPanX = gridWidth - centerWidth
-	app.maxPanY = gridHeight - centerHeight
+	app.maxPanX = gridWidth - app.centerWidth
+	app.maxPanY = gridHeight - app.centerHeight
 	
 	if app.maxPanX < 0 {
 		app.maxPanX = 0
@@ -131,8 +160,9 @@ func (app *BenchmarkApp) LoadImage(filePath string) error {
 		app.maxPanY = 0
 	}
 
-	log.Printf("Image loaded: %dx%d, Grid: %dx%d, Max pan: %dx%d", 
-		app.imageWidth, app.imageHeight, gridWidth, gridHeight, app.maxPanX, app.maxPanY)
+	log.Printf("Image loaded: %dx%d, Grid: %dx%d", app.imageWidth, app.imageHeight, gridWidth, gridHeight)
+	log.Printf("Display area: %d%% (%dx%d pixels), Position: (%d,%d), Max pan: %dx%d", 
+		app.areaPercent, app.centerWidth, app.centerHeight, app.startX, app.startY, app.maxPanX, app.maxPanY)
 
 	return nil
 }
@@ -161,19 +191,12 @@ func (app *BenchmarkApp) UpdatePanning() {
 }
 
 func (app *BenchmarkApp) RenderFrame() error {
-	// Create display buffer for center area
-	centerWidth := int(float64(LCD_WIDTH) * CENTER_AREA)
-	centerHeight := int(float64(LCD_HEIGHT) * CENTER_AREA)
-	
-	displayBuffer := make([]color.RGBA, centerWidth*centerHeight)
-	
-	// Calculate center position on display
-	startX := (LCD_WIDTH - centerWidth) / 2
-	startY := (LCD_HEIGHT - centerHeight) / 2
+	// Create display buffer for specified area
+	displayBuffer := make([]color.RGBA, app.centerWidth*app.centerHeight)
 
 	// Render 3x3 grid with panning offset
-	for dy := 0; dy < centerHeight; dy++ {
-		for dx := 0; dx < centerWidth; dx++ {
+	for dy := 0; dy < app.centerHeight; dy++ {
+		for dx := 0; dx < app.centerWidth; dx++ {
 			// Calculate source position in the 3x3 grid with panning
 			srcX := (dx + app.panX) % (app.imageWidth * GRID_SIZE)
 			srcY := (dy + app.panY) % (app.imageHeight * GRID_SIZE)
@@ -185,15 +208,15 @@ func (app *BenchmarkApp) RenderFrame() error {
 			// Get color from source image
 			if cellX < app.imageWidth && cellY < app.imageHeight {
 				srcIndex := cellY*app.imageWidth + cellX
-				displayBuffer[dy*centerWidth+dx] = app.imageBuffer[srcIndex]
+				displayBuffer[dy*app.centerWidth+dx] = app.imageBuffer[srcIndex]
 			}
 		}
 	}
 
 	// Send buffer to display
 	err := app.display.FillRectangleWithBuffer(
-		int16(startX), int16(startY),
-		int16(centerWidth), int16(centerHeight),
+		int16(app.startX), int16(app.startY),
+		int16(app.centerWidth), int16(app.centerHeight),
 		displayBuffer,
 	)
 	
@@ -246,12 +269,23 @@ func main() {
 	// Command-line flags
 	noDMA := flag.Bool("nodma", false, "Disable DMA transfers (default: false, DMA enabled)")
 	duration := flag.Int("duration", 30, "Benchmark duration in seconds")
+	area := flag.Int("area", DEFAULT_AREA, fmt.Sprintf("Display area percentage (%d-%d%%, default: %d%%)", MIN_AREA, MAX_AREA, DEFAULT_AREA))
 	flag.Parse()
 
+	// Validate area percentage
+	if *area < MIN_AREA || *area > MAX_AREA {
+		log.Printf("Warning: Area %d%% out of range, clamping to %d-%d%%", *area, MIN_AREA, MAX_AREA)
+		if *area < MIN_AREA {
+			*area = MIN_AREA
+		} else {
+			*area = MAX_AREA
+		}
+	}
+
 	useDMA := !*noDMA
-	log.Printf("Starting GC9307 benchmark (DMA: %t, Duration: %ds)", useDMA, *duration)
+	log.Printf("Starting GC9307 benchmark (DMA: %t, Area: %d%%, Duration: %ds)", useDMA, *area, *duration)
 	
-	app := NewBenchmarkApp(useDMA)
+	app := NewBenchmarkApp(useDMA, *area)
 	
 	log.Println("Initializing display...")
 	if err := app.InitializeDisplay(); err != nil {
