@@ -73,6 +73,7 @@ if [ $? -eq 0 ]; then
     echo "- Real-time FPS measurement and console output"
     echo "- High-speed 80MHz SPI transfers"
     echo "- Optimized CS (Chip Select) operations"
+    echo "- Zero-allocation frame rendering (pre-allocated buffers)"
     echo "- DMA-optimized transfers (enabled by default)"
     echo "- Configurable area size, duration and DMA mode"
     echo "- Usage: ./gc9307_benchmark [-nodma] [-duration=30] [-area=50]"

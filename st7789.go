@@ -309,11 +309,15 @@ func (d *Device) SetPixel(x int16, y int16, c color.RGBA) {
 func (d *Device) setWindow(x, y, w, h int16) {
 	x += d.columnOffset
 	y += d.rowOffset
-	d.Tx([]uint8{CASET}, true)
-	d.Tx([]uint8{uint8(x >> 8), uint8(x), uint8((x + w - 1) >> 8), uint8(x + w - 1)}, false)
-	d.Tx([]uint8{RASET}, true)
-	d.Tx([]uint8{uint8(y >> 8), uint8(y), uint8((y + h - 1) >> 8), uint8(y + h - 1)}, false)
-	d.Command(RAMWR)
+	
+	// Optimize CS usage by batching commands in a single transaction
+	d.BeginTransaction()
+	d.TxWithCS([]uint8{CASET}, true, false)
+	d.TxWithCS([]uint8{uint8(x >> 8), uint8(x), uint8((x + w - 1) >> 8), uint8(x + w - 1)}, false, false)
+	d.TxWithCS([]uint8{RASET}, true, false)
+	d.TxWithCS([]uint8{uint8(y >> 8), uint8(y), uint8((y + h - 1) >> 8), uint8(y + h - 1)}, false, false)
+	d.TxWithCS([]uint8{RAMWR}, true, false)
+	d.EndTransaction()
 }
 
 // FillRectangle fills a rectangle at a given coordinates with a color
@@ -375,6 +379,9 @@ func (d *Device) fillRectangleWithBufferDMA(width, height int16, buffer []color.
 	// Create larger buffer for DMA transfers
 	dmaBuffer := make([]uint8, dmaBatchLength*2)
 	
+	// Start CS transaction for the entire transfer
+	d.BeginTransaction()
+	
 	k := int32(width) * int32(height)
 	offset := int32(0)
 	for k > 0 {
@@ -393,15 +400,21 @@ func (d *Device) fillRectangleWithBufferDMA(width, height int16, buffer []color.
 			}
 		}
 		
-		d.Tx(dmaBuffer[:currentBatch*2], false)
+		d.TxWithCS(dmaBuffer[:currentBatch*2], false, false)
 		k -= currentBatch
 		offset += currentBatch
 	}
+	
+	// End CS transaction
+	d.EndTransaction()
 	return nil
 }
 
 // fillRectangleWithBufferOriginal uses the original transfer logic (no DMA)
 func (d *Device) fillRectangleWithBufferOriginal(width, height int16, buffer []color.RGBA) error {
+	// Start CS transaction for the entire transfer
+	d.BeginTransaction()
+	
 	k := int32(width) * int32(height)
 	offset := int32(0)
 	for k > 0 {
@@ -415,13 +428,16 @@ func (d *Device) fillRectangleWithBufferOriginal(width, height int16, buffer []c
 			}
 		}
 		if k >= d.batchLength {
-			d.Tx(d.buffer, false)
+			d.TxWithCS(d.buffer, false, false)
 		} else {
-			d.Tx(d.buffer[:k*2], false)
+			d.TxWithCS(d.buffer[:k*2], false, false)
 		}
 		k -= d.batchLength
 		offset += d.batchLength
 	}
+	
+	// End CS transaction
+	d.EndTransaction()
 	return nil
 }
 
@@ -462,6 +478,9 @@ func (d *Device) fillRectangleWithImageDMA(width, height int16, fb *image.RGBA) 
 	// Create larger buffer for DMA transfers
 	dmaBuffer := make([]uint8, dmaBatchLength*2)
 
+	// Start CS transaction for the entire transfer
+	d.BeginTransaction()
+
 	// Total number of pixels in the rectangle.
 	totalPixels := int32(width) * int32(height)
 	offset := int32(0)
@@ -490,15 +509,21 @@ func (d *Device) fillRectangleWithImageDMA(width, height int16, fb *image.RGBA) 
 		}
 		
 		// Transmit the batch.
-		d.Tx(dmaBuffer[:currentBatch*2], false)
+		d.TxWithCS(dmaBuffer[:currentBatch*2], false, false)
 		totalPixels -= currentBatch
 		offset += currentBatch
 	}
+
+	// End CS transaction
+	d.EndTransaction()
 	return nil
 }
 
 // fillRectangleWithImageOriginal uses the original transfer logic (no DMA)
 func (d *Device) fillRectangleWithImageOriginal(width, height int16, fb *image.RGBA) error {
+	// Start CS transaction for the entire transfer
+	d.BeginTransaction()
+
 	// Total number of pixels in the rectangle.
 	totalPixels := int32(width) * int32(height)
 	offset := int32(0)
@@ -522,13 +547,16 @@ func (d *Device) fillRectangleWithImageOriginal(width, height int16, fb *image.R
 		}
 		// Transmit the batch.
 		if totalPixels >= d.batchLength {
-			d.Tx(d.buffer, false)
+			d.TxWithCS(d.buffer, false, false)
 		} else {
-			d.Tx(d.buffer[:totalPixels*2], false)
+			d.TxWithCS(d.buffer[:totalPixels*2], false, false)
 		}
 		totalPixels -= d.batchLength
 		offset += d.batchLength
 	}
+
+	// End CS transaction
+	d.EndTransaction()
 	return nil
 }
 
@@ -602,31 +630,38 @@ func (d *Device) Data(data uint8) {
 
 // Tx sends data to the display
 func (d *Device) Tx(data []byte, isCommand bool) {
+	d.TxWithCS(data, isCommand, true)
+}
+
+// TxWithCS sends data to the display (CS parameter ignored for performance)
+func (d *Device) TxWithCS(data []byte, isCommand bool, toggleCS bool) {
 	if isCommand {
 		d.dcPin.Out(gpio.Low)
 	} else {
 		d.dcPin.Out(gpio.High)
 	}
-	if(d.usdCSpin){
-		d.csPin.Out(gpio.Low)
-	}
 	d.bus.Tx(data, nil)
-	if(d.usdCSpin){
-		d.csPin.Out(gpio.High)
-	}
+}
+
+// BeginTransaction starts a CS transaction (no-op for performance)
+func (d *Device) BeginTransaction() {
+	// No CS operations needed - UseCS is always false
+}
+
+// EndTransaction ends a CS transaction (no-op for performance)
+func (d *Device) EndTransaction() {
+	// No CS operations needed - UseCS is always false
 }
 
 // Rx reads data from the display
 func (d *Device) Rx(command uint8, data []byte) {
 	d.dcPin.Out(gpio.Low)
-	d.csPin.Out(gpio.Low)
 	sendCommand(d.bus, command)
 
 	d.dcPin.Out(gpio.High)
 	for i := range data {
 		data[i], _ = sendCommand(d.bus, 0xFF)
 	}
-	d.csPin.Out(gpio.High)
 }
 
 func sendCommand(bus spi.Conn, command byte) (byte, error) {

@@ -33,24 +33,25 @@ const (
 )
 
 type BenchmarkApp struct {
-	display     gc9307.Device
-	imageBuffer []color.RGBA
-	imageWidth  int
-	imageHeight int
-	frameCount  int
-	startTime   time.Time
-	panX        int
-	panY        int
-	panDirX     int
-	panDirY     int
-	maxPanX     int
-	maxPanY     int
-	useDMA      bool
-	areaPercent int
-	centerWidth int
-	centerHeight int
-	startX      int
-	startY      int
+	display       gc9307.Device
+	imageBuffer   []color.RGBA
+	displayBuffer []color.RGBA  // Pre-allocated display buffer
+	imageWidth    int
+	imageHeight   int
+	frameCount    int
+	startTime     time.Time
+	panX          int
+	panY          int
+	panDirX       int
+	panDirY       int
+	maxPanX       int
+	maxPanY       int
+	useDMA        bool
+	areaPercent   int
+	centerWidth   int
+	centerHeight  int
+	startX        int
+	startY        int
 }
 
 func NewBenchmarkApp(useDMA bool, areaPercent int) *BenchmarkApp {
@@ -160,9 +161,14 @@ func (app *BenchmarkApp) LoadImage(filePath string) error {
 		app.maxPanY = 0
 	}
 
+	// Pre-allocate display buffer to avoid per-frame allocations
+	bufferSize := app.centerWidth * app.centerHeight
+	app.displayBuffer = make([]color.RGBA, bufferSize)
+	
 	log.Printf("Image loaded: %dx%d, Grid: %dx%d", app.imageWidth, app.imageHeight, gridWidth, gridHeight)
 	log.Printf("Display area: %d%% (%dx%d pixels), Position: (%d,%d), Max pan: %dx%d", 
 		app.areaPercent, app.centerWidth, app.centerHeight, app.startX, app.startY, app.maxPanX, app.maxPanY)
+	log.Printf("Pre-allocated display buffer: %d pixels (%d bytes)", bufferSize, bufferSize*16) // 16 bytes per RGBA
 
 	return nil
 }
@@ -191,8 +197,8 @@ func (app *BenchmarkApp) UpdatePanning() {
 }
 
 func (app *BenchmarkApp) RenderFrame() error {
-	// Create display buffer for specified area
-	displayBuffer := make([]color.RGBA, app.centerWidth*app.centerHeight)
+	// Reuse pre-allocated display buffer (no allocation overhead)
+	displayBuffer := app.displayBuffer
 
 	// Render 3x3 grid with panning offset
 	for dy := 0; dy < app.centerHeight; dy++ {
