@@ -1,8 +1,10 @@
 # Binaries
 gc9307_driver
 gc9307_sample
+gc9307_benchmark
 perf_test_arm
 examples/sample/sample
+examples/benchmark/benchmark
 
 # Image files
 *.png

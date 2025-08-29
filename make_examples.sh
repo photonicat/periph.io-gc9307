@@ -39,22 +39,39 @@ if [ "$HOST_ARCH" = "x86_64" ]; then
     fi
     
     echo "Using cross-compiler: $CC"
+    echo "Building sample..."
     cd examples/sample && env $BUILD_ENV CC=$CC go build -buildvcs=false -o ../../gc9307_sample . && cd ../..
+    
+    echo "Building benchmark..."
+    cd examples/benchmark && env $BUILD_ENV CC=$CC go build -buildvcs=false -o ../../gc9307_benchmark . && cd ../..
 else
     echo -e "\n${YELLOW}Native compilation for ARM...${NC}"
     # Native compile on ARM system
+    echo "Building sample..."
     cd examples/sample && go build -buildvcs=false -o ../../gc9307_sample . && cd ../..
+    
+    echo "Building benchmark..."
+    cd examples/benchmark && go build -buildvcs=false -o ../../gc9307_benchmark . && cd ../..
 fi
 
 if [ $? -eq 0 ]; then
-    echo -e "${GREEN}Build successful! Run with: ./gc9307_sample${NC}"
+    echo -e "${GREEN}Build successful!${NC}"
+    echo ""
+    echo "Built binaries:"
+    echo "- ${BLUE}./gc9307_sample${NC}  - Basic sample program"
+    echo "- ${BLUE}./gc9307_benchmark${NC} - Performance benchmark with 3x3 panning"
     echo ""
     echo "Sample Program Features:"
     echo "- Basic GC9307 display initialization"
     echo "- Image loading and display"
     echo "- Example of driver usage patterns"
     echo ""
-    echo "Make sure to run this on your target device with the GC9307 display connected."
+    echo "Benchmark Program Features:"
+    echo "- 3x3 grid of example.png with pixel-by-pixel panning"
+    echo "- Real-time FPS measurement and console output"
+    echo "- Performance testing for 30 seconds"
+    echo ""
+    echo "Make sure to run these on your target device with the GC9307 display connected."
 else
     echo -e "${RED}Build failed. Check your Go installation and dependencies.${NC}"
     exit 1
