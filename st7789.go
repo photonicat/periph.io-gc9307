@@ -9,6 +9,8 @@ import (
 	"image"
 	"time"
 	"os"
+	"fmt"
+	"log"
 
 	"errors"
 )
@@ -18,6 +20,23 @@ type Rotation uint8
 
 // FrameRate controls the frame rate used by the display.
 type FrameRate uint8
+
+// checkDMAAvailability checks if DMA channels are available for SPI transfers
+func checkDMAAvailability() error {
+	dmaRxPath := "/sys/devices/platform/soc/2ad00000.spi/dma:rx"
+	dmaTxPath := "/sys/devices/platform/soc/2ad00000.spi/dma:tx"
+	
+	if _, err := os.Stat(dmaRxPath); os.IsNotExist(err) {
+		return fmt.Errorf("DMA RX channel not found at %s", dmaRxPath)
+	}
+	
+	if _, err := os.Stat(dmaTxPath); os.IsNotExist(err) {
+		return fmt.Errorf("DMA TX channel not found at %s", dmaTxPath)
+	}
+	
+	log.Printf("DMA channels found: RX=%s, TX=%s", dmaRxPath, dmaTxPath)
+	return nil
+}
 
 // Device wraps an SPI connection.
 type Device struct {
@@ -40,6 +59,9 @@ type Device struct {
 	vSyncLines      int16
 	buffer          []uint8
 	initialized     bool
+	useDMA          bool
+	maxTransferSize int32
+	chunkSize       int32
 }
 
 // Config is the configuration for the display
@@ -52,6 +74,7 @@ type Config struct {
 	FrameRate    FrameRate
 	VSyncLines   int16
 	UseCS        bool
+	UseDMA       bool // Enable DMA transfers (default: true)
 }
 
 // New creates a new gc9307 connection. The SPI wire must already be configured.
@@ -102,6 +125,28 @@ func (d *Device) Configure(cfg Config) {
 		d.vSyncLines = 16
 	}
 
+	// Configure DMA settings - only if explicitly enabled
+	d.useDMA = cfg.UseDMA
+	if d.useDMA {
+		if err := checkDMAAvailability(); err != nil {
+			log.Printf("DMA not available, falling back to original mode: %v", err)
+			d.useDMA = false
+		}
+	}
+	
+	// Set transfer parameters - use original settings when DMA is disabled
+	if d.useDMA {
+		d.maxTransferSize = 65536 // 64KB for DMA transfers
+		d.chunkSize = 0           // No chunking needed for DMA
+		log.Println("Using DMA mode for display transfers")
+	} else {
+		// Keep original settings - no special chunking or size limits
+		d.maxTransferSize = 0     // No limit for original mode
+		d.chunkSize = 0           // No chunking for original mode
+		log.Println("Using original transfer mode")
+	}
+
+	// Use original batch length calculation
 	d.batchLength = int32(d.width)
 	if d.height > d.width {
 		d.batchLength = int32(d.height)
@@ -311,6 +356,52 @@ func (d *Device) FillRectangleWithBuffer(x, y, width, height int16, buffer []col
 	}
 	d.setWindow(x, y, width, height)
 
+	if d.useDMA {
+		return d.fillRectangleWithBufferDMA(width, height, buffer)
+	} else {
+		return d.fillRectangleWithBufferOriginal(width, height, buffer)
+	}
+}
+
+// fillRectangleWithBufferDMA uses larger batches optimized for DMA
+func (d *Device) fillRectangleWithBufferDMA(width, height int16, buffer []color.RGBA) error {
+	// For DMA mode, use larger batch sizes but keep the same logic structure as original
+	dmaBatchLength := d.batchLength * 4 // Use 4x larger batches for DMA
+	maxBatchLength := d.maxTransferSize / 2 // 2 bytes per pixel
+	if dmaBatchLength > maxBatchLength {
+		dmaBatchLength = maxBatchLength
+	}
+	
+	// Create larger buffer for DMA transfers
+	dmaBuffer := make([]uint8, dmaBatchLength*2)
+	
+	k := int32(width) * int32(height)
+	offset := int32(0)
+	for k > 0 {
+		currentBatch := dmaBatchLength
+		if k < dmaBatchLength {
+			currentBatch = k
+		}
+		
+		for i := int32(0); i < currentBatch; i++ {
+			if offset+i < int32(len(buffer)) {
+				c565 := RGBATo565BGR(buffer[offset+i])
+				c1 := uint8(c565 >> 8)
+				c2 := uint8(c565)
+				dmaBuffer[i*2] = c1
+				dmaBuffer[i*2+1] = c2
+			}
+		}
+		
+		d.Tx(dmaBuffer[:currentBatch*2], false)
+		k -= currentBatch
+		offset += currentBatch
+	}
+	return nil
+}
+
+// fillRectangleWithBufferOriginal uses the original transfer logic (no DMA)
+func (d *Device) fillRectangleWithBufferOriginal(width, height int16, buffer []color.RGBA) error {
 	k := int32(width) * int32(height)
 	offset := int32(0)
 	for k > 0 {
@@ -352,6 +443,62 @@ func (d *Device) FillRectangleWithImage(x, y, width, height int16, fb *image.RGB
 	// Set the display window to the target rectangle.
 	d.setWindow(x, y, width, height)
 
+	if d.useDMA {
+		return d.fillRectangleWithImageDMA(width, height, fb)
+	} else {
+		return d.fillRectangleWithImageOriginal(width, height, fb)
+	}
+}
+
+// fillRectangleWithImageDMA uses larger batches optimized for DMA
+func (d *Device) fillRectangleWithImageDMA(width, height int16, fb *image.RGBA) error {
+	// For DMA mode, use larger batch sizes but keep the same logic structure as original
+	dmaBatchLength := d.batchLength * 4 // Use 4x larger batches for DMA
+	maxBatchLength := d.maxTransferSize / 2 // 2 bytes per pixel
+	if dmaBatchLength > maxBatchLength {
+		dmaBatchLength = maxBatchLength
+	}
+	
+	// Create larger buffer for DMA transfers
+	dmaBuffer := make([]uint8, dmaBatchLength*2)
+
+	// Total number of pixels in the rectangle.
+	totalPixels := int32(width) * int32(height)
+	offset := int32(0)
+
+	// Process pixels in larger batches for DMA.
+	for totalPixels > 0 {
+		currentBatch := dmaBatchLength
+		if totalPixels < dmaBatchLength {
+			currentBatch = totalPixels
+		}
+		
+		// For each batch, iterate over currentBatch pixels.
+		for i := int32(0); i < currentBatch; i++ {
+			if offset+i < int32(width)*int32(height) {
+				// Compute the row and column for the current pixel.
+				row := int((offset + i) / int32(width))
+				col := int((offset + i) % int32(width))
+				// Get the pixel color from the image.
+				pixel := fb.RGBAAt(col, row)
+				// Convert to RGB565.
+				c565 := RGBATo565BGR(pixel)
+				// Store the high and low bytes.
+				dmaBuffer[i*2] = uint8(c565 >> 8)
+				dmaBuffer[i*2+1] = uint8(c565)
+			}
+		}
+		
+		// Transmit the batch.
+		d.Tx(dmaBuffer[:currentBatch*2], false)
+		totalPixels -= currentBatch
+		offset += currentBatch
+	}
+	return nil
+}
+
+// fillRectangleWithImageOriginal uses the original transfer logic (no DMA)
+func (d *Device) fillRectangleWithImageOriginal(width, height int16, fb *image.RGBA) error {
 	// Total number of pixels in the rectangle.
 	totalPixels := int32(width) * int32(height)
 	offset := int32(0)

@@ -116,6 +116,7 @@ func main() {
 		FrameRate:    gc9307.FRAMERATE_60,
 		VSyncLines:   gc9307.MAX_VSYNC_SCANLINES,
 		UseCS:        false,
+		UseDMA:       true, // Enable DMA by default
 	})
 
 	// Set backlight using PWM control function

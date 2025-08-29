@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"image"
 	"image/color"
@@ -42,12 +43,14 @@ type BenchmarkApp struct {
 	panDirY     int
 	maxPanX     int
 	maxPanY     int
+	useDMA      bool
 }
 
-func NewBenchmarkApp() *BenchmarkApp {
+func NewBenchmarkApp(useDMA bool) *BenchmarkApp {
 	return &BenchmarkApp{
 		panDirX: 1,
 		panDirY: 1,
+		useDMA:  useDMA,
 	}
 }
 
@@ -61,7 +64,7 @@ func (app *BenchmarkApp) InitializeDisplay() error {
 		return err
 	}
 
-	conn, err := spiPort.Connect(40000*physic.KiloHertz, spi.Mode0, 8)
+	conn, err := spiPort.Connect(80000*physic.KiloHertz, spi.Mode0, 8)
 	if err != nil {
 		return err
 	}
@@ -76,6 +79,7 @@ func (app *BenchmarkApp) InitializeDisplay() error {
 		FrameRate:    gc9307.FRAMERATE_60,
 		VSyncLines:   gc9307.MAX_VSYNC_SCANLINES,
 		UseCS:        false,
+		UseDMA:       app.useDMA,
 	})
 
 	return nil
@@ -239,7 +243,15 @@ func (app *BenchmarkApp) RunBenchmark(durationSeconds int) {
 }
 
 func main() {
-	app := NewBenchmarkApp()
+	// Command-line flags
+	noDMA := flag.Bool("nodma", false, "Disable DMA transfers (default: false, DMA enabled)")
+	duration := flag.Int("duration", 30, "Benchmark duration in seconds")
+	flag.Parse()
+
+	useDMA := !*noDMA
+	log.Printf("Starting GC9307 benchmark (DMA: %t, Duration: %ds)", useDMA, *duration)
+	
+	app := NewBenchmarkApp(useDMA)
 	
 	log.Println("Initializing display...")
 	if err := app.InitializeDisplay(); err != nil {
@@ -253,8 +265,8 @@ func main() {
 	
 	log.Println("Display initialized, starting benchmark...")
 	
-	// Run benchmark for 30 seconds
-	app.RunBenchmark(30)
+	// Run benchmark for specified duration
+	app.RunBenchmark(*duration)
 	
 	log.Println("Benchmark finished.")
 }

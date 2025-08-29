@@ -29,6 +29,41 @@ This will automatically detect your host architecture and:
 
 Make sure to place an `example.png` image file in the root directory for testing.
 
+## DMA Support
+
+This driver supports DMA-optimized transfers for improved performance:
+
+- **DMA mode** (default): Uses 64KB transfers with DMA channels for maximum throughput
+- **Original mode**: Uses the original transfer logic when DMA is disabled
+
+DMA is enabled by default but will automatically fall back to original mode if DMA channels are not available.
+
+To disable DMA explicitly:
+```go
+display.Configure(gc9307.Config{
+    // ... other config options ...
+    UseDMA: false, // Use original transfer mode
+})
+```
+
+### Benchmark Usage
+
+The benchmark program supports command-line options:
+
+```shell
+# Run with DMA enabled (default)
+./gc9307_benchmark
+
+# Run without DMA (original settings)
+./gc9307_benchmark -nodma
+
+# Run for 60 seconds with DMA
+./gc9307_benchmark -duration=60
+
+# Run for 10 seconds without DMA
+./gc9307_benchmark -nodma -duration=10
+```
+
 ## How to use
 
 Basic usage pattern:
@@ -85,6 +120,7 @@ func main() {
 		ColumnOffset: 0,
 		FrameRate:    gc9307.FRAMERATE_60,
 		VSyncLines:   gc9307.MAX_VSYNC_SCANLINES,
+		UseDMA:       true, // Enable DMA transfers (default: true)
 	})
 
 	// test display

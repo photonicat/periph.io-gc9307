@@ -69,7 +69,9 @@ if [ $? -eq 0 ]; then
     echo "Benchmark Program Features:"
     echo "- 3x3 grid of example.png with pixel-by-pixel panning"
     echo "- Real-time FPS measurement and console output"
-    echo "- Performance testing for 30 seconds"
+    echo "- DMA-optimized transfers (enabled by default)"
+    echo "- Configurable benchmark duration and DMA mode"
+    echo "- Usage: ./gc9307_benchmark [-nodma] [-duration=30]"
     echo ""
     echo "Make sure to run these on your target device with the GC9307 display connected."
 else
