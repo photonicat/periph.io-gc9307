@@ -156,3 +156,88 @@ func BenchmarkReferenceConvert(b *testing.B) {
 		_ = reference(img)
 	}
 }
+
+// countingBus records every Tx so we can count window-setup commands.
+type countingBus struct {
+	limit int
+	txs   [][]byte
+}
+
+func (b *countingBus) String() string                  { return "countingBus" }
+func (b *countingBus) Duplex() conn.Duplex              { return conn.Full }
+func (b *countingBus) MaxTxSize() int                   { return b.limit }
+func (b *countingBus) TxPackets(p []spi.Packet) error   { return nil }
+func (b *countingBus) Tx(w, r []byte) error {
+	cp := make([]byte, len(w))
+	copy(cp, w)
+	b.txs = append(b.txs, cp)
+	return nil
+}
+
+func (b *countingBus) countOpcode(op byte) int {
+	n := 0
+	for _, t := range b.txs {
+		if len(t) == 1 && t[0] == op {
+			n++
+		}
+	}
+	return n
+}
+
+func newCountingDevice() (*Device, *countingBus) {
+	bus := &countingBus{limit: 4096}
+	d := &Device{
+		bus:           bus,
+		dcPin:         nopPin{},
+		batchLength:   320,
+		commandBuffer: make([]uint8, 11),
+		width:         172,
+		height:        320,
+		rotation:      ROTATION_180,
+	}
+	d.dmaBuffer = make([]uint8, 2048*2)
+	d.buffer = make([]uint8, 320*2)
+	return d, bus
+}
+
+// TestWindowCacheSkipsCASET verifies that repeated writes to the same
+// rectangle send CASET/RASET only once but RAMWR every time, that a different
+// rectangle re-sends CASET/RASET, and that SetRotation/SetScroll invalidate.
+func TestWindowCacheSkipsCASET(t *testing.T) {
+	d, bus := newCountingDevice()
+	img := makeImage(172, 266)
+
+	// 3 identical middle-region writes.
+	for i := 0; i < 3; i++ {
+		if err := d.FillRectangleWithImage(0, 32, 172, 266, img); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	if got := bus.countOpcode(CASET); got != 1 {
+		t.Fatalf("CASET sent %d times for 3 identical rects, want 1", got)
+	}
+	if got := bus.countOpcode(RASET); got != 1 {
+		t.Fatalf("RASET sent %d times for 3 identical rects, want 1", got)
+	}
+	if got := bus.countOpcode(RAMWR); got != 3 {
+		t.Fatalf("RAMWR sent %d times for 3 writes, want 3", got)
+	}
+
+	// A different rectangle must re-arm CASET/RASET.
+	footer := makeImage(172, 22)
+	if err := d.FillRectangleWithImage(0, 298, 172, 22, footer); err != nil {
+		t.Fatalf("footer write: %v", err)
+	}
+	if got := bus.countOpcode(CASET); got != 2 {
+		t.Fatalf("CASET sent %d times after region change, want 2", got)
+	}
+
+	// SetScroll invalidates the cache: next same-rect write re-sends CASET.
+	d.SetScroll(0)
+	if err := d.FillRectangleWithImage(0, 298, 172, 22, footer); err != nil {
+		t.Fatalf("post-scroll write: %v", err)
+	}
+	if got := bus.countOpcode(CASET); got != 3 {
+		t.Fatalf("CASET sent %d times after SetScroll, want 3", got)
+	}
+}

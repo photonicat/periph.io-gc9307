@@ -83,6 +83,14 @@ type Device struct {
 	useDMA          bool
 	maxTransferSize int32
 	chunkSize       int32
+
+	// Cached address window (post-offset coordinates) so that repeated writes
+	// to the same rectangle can skip the CASET/RASET transactions.
+	windowValid bool
+	winX        int16
+	winY        int16
+	winW        int16
+	winH        int16
 }
 
 // Config is the configuration for the display
@@ -345,46 +353,61 @@ func (d *Device) SetPixel(x int16, y int16, c color.RGBA) {
 	d.FillRectangle(x, y, 1, 1, c)
 }
 
-// setWindow prepares the screen to be modified at a given rectangle
+// setWindow prepares the screen to be modified at a given rectangle.
+//
+// The column (CASET) and row (RASET) address windows are cached: when the same
+// rectangle is drawn repeatedly (e.g. every frame of a slide animation writes
+// the identical middle region) the four CASET/RASET transactions are skipped
+// and only RAMWR is re-issued. RAMWR must always be sent because it resets the
+// panel's RAM write pointer to the window's top-left corner before pixel data.
 func (d *Device) setWindow(x, y, w, h int16) {
 	x += d.columnOffset
 	y += d.rowOffset
-	
-	// Optimized window setup with minimal SPI transactions
-	// Use pre-allocated buffer to avoid allocations
+
 	cmd := d.commandBuffer
-	
-	// CASET command + coordinates
-	cmd[0] = CASET
-	cmd[1] = uint8(x >> 8)
-	cmd[2] = uint8(x)
-	cmd[3] = uint8((x + w - 1) >> 8)
-	cmd[4] = uint8(x + w - 1)
-	
-	// Send CASET command and data in 2 transactions
-	d.dcPin.Out(gpio.Low)   // Command mode
-	d.bus.Tx(cmd[:1], nil)
-	d.dcPin.Out(gpio.High)  // Data mode
-	d.bus.Tx(cmd[1:5], nil)
-	
-	// RASET command + coordinates
-	cmd[0] = RASET
-	cmd[1] = uint8(y >> 8)
-	cmd[2] = uint8(y)
-	cmd[3] = uint8((y + h - 1) >> 8)
-	cmd[4] = uint8(y + h - 1)
-	
-	// Send RASET command and data in 2 transactions
-	d.dcPin.Out(gpio.Low)   // Command mode
-	d.bus.Tx(cmd[:1], nil)
-	d.dcPin.Out(gpio.High)  // Data mode
-	d.bus.Tx(cmd[1:5], nil)
-	
-	// RAMWR command
+
+	if !d.windowValid || x != d.winX || y != d.winY || w != d.winW || h != d.winH {
+		// CASET command + coordinates
+		cmd[0] = CASET
+		cmd[1] = uint8(x >> 8)
+		cmd[2] = uint8(x)
+		cmd[3] = uint8((x + w - 1) >> 8)
+		cmd[4] = uint8(x + w - 1)
+
+		d.dcPin.Out(gpio.Low) // Command mode
+		d.bus.Tx(cmd[:1], nil)
+		d.dcPin.Out(gpio.High) // Data mode
+		d.bus.Tx(cmd[1:5], nil)
+
+		// RASET command + coordinates
+		cmd[0] = RASET
+		cmd[1] = uint8(y >> 8)
+		cmd[2] = uint8(y)
+		cmd[3] = uint8((y + h - 1) >> 8)
+		cmd[4] = uint8(y + h - 1)
+
+		d.dcPin.Out(gpio.Low) // Command mode
+		d.bus.Tx(cmd[:1], nil)
+		d.dcPin.Out(gpio.High) // Data mode
+		d.bus.Tx(cmd[1:5], nil)
+
+		d.winX, d.winY, d.winW, d.winH = x, y, w, h
+		d.windowValid = true
+	}
+
+	// RAMWR command - always sent; it rewinds the RAM pointer to the window
+	// origin so the following pixel stream lands correctly.
 	cmd[0] = RAMWR
-	d.dcPin.Out(gpio.Low)   // Command mode
+	d.dcPin.Out(gpio.Low) // Command mode
 	d.bus.Tx(cmd[:1], nil)
-	d.dcPin.Out(gpio.High)  // Data mode for following pixel data
+	d.dcPin.Out(gpio.High) // Data mode for following pixel data
+}
+
+// invalidateWindow forces the next setWindow to re-send CASET/RASET. Call it
+// whenever something other than FillRectangle* may have moved the address
+// window (e.g. scroll, rotation change, raw command sequences).
+func (d *Device) invalidateWindow() {
+	d.windowValid = false
 }
 
 // FillRectangle fills a rectangle at a given coordinates with a color
@@ -665,6 +688,8 @@ func (d *Device) SetRotation(rotation Rotation) {
 	}
 	d.Command(MADCTL)
 	d.Data(madctl)
+	// Orientation/offsets changed; the cached window is no longer valid.
+	d.invalidateWindow()
 }
 
 // Command sends a command to the display.
@@ -766,6 +791,7 @@ func (d *Device) SetScrollArea(topFixedArea, bottomFixedArea int16) {
 func (d *Device) SetScroll(line int16) {
 	d.Command(VSCRSADD)
 	d.Tx([]uint8{uint8(line >> 8), uint8(line)}, false)
+	d.invalidateWindow()
 }
 
 // StopScroll returns the display to its normal state.
