@@ -4,6 +4,7 @@ package gc9307
 import (
 	"image/color"
 	"math"
+	"periph.io/x/conn/v3"
 	"periph.io/x/conn/v3/gpio"
 	"periph.io/x/conn/v3/spi"
 	"image"
@@ -14,6 +15,23 @@ import (
 
 	"errors"
 )
+
+// defaultMaxTxSize is the fallback per-transfer byte limit used when the SPI
+// bus does not advertise its own limit. It matches the common Linux spidev
+// bufsiz default of 4096 bytes.
+const defaultMaxTxSize = 4096
+
+// busMaxTxSize returns the largest single Tx the bus accepts, in bytes. The
+// Linux sysfs SPI driver implements conn.Limits and reports the spidev bufsiz;
+// when no limit is advertised we fall back to a safe default.
+func busMaxTxSize(bus spi.Conn) int32 {
+	if l, ok := bus.(conn.Limits); ok {
+		if n := l.MaxTxSize(); n > 0 {
+			return int32(n)
+		}
+	}
+	return defaultMaxTxSize
+}
 
 
 // Rotation controls the rotation used by the display.
@@ -139,9 +157,14 @@ func (d *Device) Configure(cfg Config) {
 	
 	// Set transfer parameters - use original settings when DMA is disabled
 	if d.useDMA {
-		d.maxTransferSize = 65536 // 64KB for DMA transfers
-		d.chunkSize = 0           // No chunking needed for DMA
-		log.Println("Using DMA mode for display transfers")
+		// The Linux spidev driver enforces a hard per-ioctl limit equal to
+		// /sys/module/spidev/parameters/bufsiz (typically 4096 bytes). Sending
+		// a larger Tx fails outright, so discover the real limit from the bus
+		// and size our batches right up to it. Larger batches mean fewer Tx
+		// syscalls per frame, which is the dominant cost when streaming images.
+		d.maxTransferSize = busMaxTxSize(d.bus)
+		d.chunkSize = 0 // No chunking needed for DMA
+		log.Printf("Using DMA mode for display transfers (max transfer %d bytes)", d.maxTransferSize)
 	} else {
 		// Keep original settings - no special chunking or size limits
 		d.maxTransferSize = 0     // No limit for original mode
@@ -155,15 +178,16 @@ func (d *Device) Configure(cfg Config) {
 		d.batchLength = int32(d.height)
 	}
 	d.batchLength += d.batchLength & 1
-	
+
 	d.buffer = make([]uint8, d.batchLength*2)
-	
-	// Pre-allocate DMA buffer to avoid runtime allocations
+
+	// Pre-allocate DMA buffer to avoid runtime allocations. Use the largest
+	// batch (in pixels) that still fits inside a single spidev transfer; each
+	// RGB565 pixel is 2 bytes, so the cap is maxTransferSize/2 pixels.
 	if d.useDMA {
-		dmaBatchLength := d.batchLength * 4 // Use 4x larger batches for DMA
-		maxBatchLength := d.maxTransferSize / 2 // 2 bytes per pixel
-		if dmaBatchLength > maxBatchLength {
-			dmaBatchLength = maxBatchLength
+		dmaBatchLength := d.maxTransferSize / 2 // 2 bytes per pixel
+		if dmaBatchLength < d.batchLength {
+			dmaBatchLength = d.batchLength
 		}
 		d.dmaBuffer = make([]uint8, dmaBatchLength*2)
 	}
@@ -509,93 +533,75 @@ func (d *Device) FillRectangleWithImage(x, y, width, height int16, fb *image.RGB
 	}
 }
 
-// fillRectangleWithImageDMA uses larger batches optimized for DMA
+// fillRectangleWithImageDMA streams an image to the panel using the largest
+// SPI transfers the kernel allows, minimising the number of Tx ioctl syscalls.
 func (d *Device) fillRectangleWithImageDMA(width, height int16, fb *image.RGBA) error {
-	// For DMA mode, use larger batch sizes but keep the same logic structure as original
-	dmaBatchLength := d.batchLength * 4 // Use 4x larger batches for DMA
-	maxBatchLength := d.maxTransferSize / 2 // 2 bytes per pixel
-	if dmaBatchLength > maxBatchLength {
-		dmaBatchLength = maxBatchLength
+	batchLen := int32(len(d.dmaBuffer) / 2)
+	if batchLen <= 0 {
+		batchLen = d.batchLength
 	}
-	
-	// Use pre-allocated DMA buffer
-	dmaBuffer := d.dmaBuffer
-
-	// Start CS transaction for the entire transfer
-	d.BeginTransaction()
-
-	// Total number of pixels in the rectangle.
-	totalPixels := int32(width) * int32(height)
-	offset := int32(0)
-
-	// Process pixels in larger batches for DMA.
-	for totalPixels > 0 {
-		currentBatch := dmaBatchLength
-		if totalPixels < dmaBatchLength {
-			currentBatch = totalPixels
-		}
-		
-		// For each batch, iterate over currentBatch pixels.
-		for i := int32(0); i < currentBatch; i++ {
-			if offset+i < int32(width)*int32(height) {
-				// Compute the row and column for the current pixel.
-				row := int((offset + i) / int32(width))
-				col := int((offset + i) % int32(width))
-				// Get the pixel color from the image.
-				pixel := fb.RGBAAt(col, row)
-				// Convert to RGB565.
-				c565 := RGBATo565BGR(pixel)
-				// Store the high and low bytes.
-				dmaBuffer[i*2] = uint8(c565 >> 8)
-				dmaBuffer[i*2+1] = uint8(c565)
-			}
-		}
-		
-		// Transmit the batch.
-		d.TxWithCS(dmaBuffer[:currentBatch*2], false, false)
-		totalPixels -= currentBatch
-		offset += currentBatch
-	}
-
-	// End CS transaction
-	d.EndTransaction()
-	return nil
+	return d.streamImage(width, height, fb, d.dmaBuffer, batchLen)
 }
 
-// fillRectangleWithImageOriginal uses the original transfer logic (no DMA)
+// fillRectangleWithImageOriginal uses the original (smaller) batch buffer but
+// still benefits from the fast linear pixel walk in streamImage.
 func (d *Device) fillRectangleWithImageOriginal(width, height int16, fb *image.RGBA) error {
-	// Start CS transaction for the entire transfer
+	return d.streamImage(width, height, fb, d.buffer, d.batchLength)
+}
+
+// streamImage converts an *image.RGBA to RGB565 (BGR order) and pushes it to
+// the panel in batches of at most batchLen pixels, reusing the provided scratch
+// buffer (which must hold at least batchLen*2 bytes).
+//
+// The hot path walks fb.Pix linearly, four bytes (one RGBA pixel) at a time,
+// instead of deriving a row/column and calling fb.RGBAAt() per pixel. That
+// removes an integer divide, a modulo and a bounds-checked accessor from the
+// inner loop. The RGB565-BGR conversion is inlined so the whole loop is just a
+// handful of byte ops plus a store. The DC line is set once for the entire
+// stream rather than per batch.
+func (d *Device) streamImage(width, height int16, fb *image.RGBA, scratch []uint8, batchLen int32) error {
 	d.BeginTransaction()
 
-	// Total number of pixels in the rectangle.
-	totalPixels := int32(width) * int32(height)
-	offset := int32(0)
+	// Hold the data line high for the whole pixel stream; touching the DC GPIO
+	// once instead of once per batch removes a syscall-equivalent per transfer.
+	d.dcPin.Out(gpio.High)
 
-	// Process pixels in batches.
-	for totalPixels > 0 {
-		// For each batch, iterate over d.batchLength pixels (or the remaining pixels).
-		for i := int32(0); i < d.batchLength; i++ {
-			if offset+i < int32(width)*int32(height) {
-				// Compute the row and column for the current pixel.
-				row := int((offset + i) / int32(width))
-				col := int((offset + i) % int32(width))
-				// Get the pixel color from the image.
-				pixel := fb.RGBAAt(col, row)
-				// Convert to RGB565.
-				c565 := RGBATo565BGR(pixel)
-				// Store the high and low bytes.
-				d.buffer[i*2] = uint8(c565 >> 8)
-				d.buffer[i*2+1] = uint8(c565)
+	pix := fb.Pix
+	stride := fb.Stride
+	b := fb.Bounds()
+	rowBytes := int(width) * 4 // source bytes per visible row (RGBA)
+
+	batch := int(batchLen)
+	if batch <= 0 {
+		batch = int(width)
+	}
+	maxOut := batch * 2 // bytes per full batch (2 bytes/pixel)
+
+	out := 0
+	rowStart := b.Min.Y*stride + b.Min.X*4
+	for row := 0; row < int(height); row++ {
+		sp := rowStart
+		end := rowStart + rowBytes
+		for sp < end {
+			r := pix[sp]
+			g := pix[sp+1]
+			bl := pix[sp+2]
+			// BGR565: high byte = bbbbbggg, low byte = gggrrrrr.
+			scratch[out] = (bl & 0xF8) | (g >> 5)
+			scratch[out+1] = ((g << 3) & 0xE0) | (r >> 3)
+			out += 2
+			sp += 4
+
+			if out == maxOut {
+				d.bus.Tx(scratch[:out], nil)
+				out = 0
 			}
 		}
-		// Transmit the batch.
-		if totalPixels >= d.batchLength {
-			d.TxWithCS(d.buffer, false, false)
-		} else {
-			d.TxWithCS(d.buffer[:totalPixels*2], false, false)
-		}
-		totalPixels -= d.batchLength
-		offset += d.batchLength
+		rowStart += stride
+	}
+	// Flush the final partial batch, if any.
+	if out > 0 {
+		d.bus.Tx(scratch[:out], nil)
 	}
 
 	// End CS transaction
