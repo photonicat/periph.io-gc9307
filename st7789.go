@@ -84,6 +84,11 @@ type Device struct {
 	maxTransferSize int32
 	chunkSize       int32
 
+	// pixelFormat selects the on-the-wire color depth (PIXFMT_RGB565 or
+	// PIXFMT_RGB444). RGB444 sends 12 bits/pixel (1.5 bytes) instead of 16,
+	// trading color depth for ~25% fewer bytes on the SPI bus.
+	pixelFormat uint8
+
 	// Cached address window (post-offset coordinates) so that repeated writes
 	// to the same rectangle can skip the CASET/RASET transactions.
 	windowValid bool
@@ -92,6 +97,12 @@ type Device struct {
 	winW        int16
 	winH        int16
 }
+
+// Pixel formats for Config.PixelFormat.
+const (
+	PIXFMT_RGB565 = 0 // 16 bits/pixel, 2 bytes (default)
+	PIXFMT_RGB444 = 1 // 12 bits/pixel, 1.5 bytes (4096 colors)
+)
 
 // Config is the configuration for the display
 type Config struct {
@@ -103,7 +114,8 @@ type Config struct {
 	FrameRate    FrameRate
 	VSyncLines   int16
 	UseCS        bool
-	UseDMA       bool // Enable DMA transfers (default: true)
+	UseDMA       bool  // Enable DMA transfers (default: true)
+	PixelFormat  uint8 // PIXFMT_RGB565 (default) or PIXFMT_RGB444
 }
 
 // New creates a new gc9307 connection. The SPI wire must already be configured.
@@ -141,6 +153,7 @@ func (d *Device) Configure(cfg Config) {
 	d.rotation = cfg.Rotation
 	d.rowOffsetCfg = cfg.RowOffset
 	d.columnOffsetCfg = cfg.ColumnOffset
+	d.pixelFormat = cfg.PixelFormat
 
 	if cfg.FrameRate != 0 {
 		d.frameRate = cfg.FrameRate
@@ -219,14 +232,19 @@ func (d *Device) Configure(cfg Config) {
 		time.Sleep(10 * time.Millisecond) //
 		d.Command(SLPOUT)                  // Exit sleep mode
 		time.Sleep(10 * time.Millisecond) //
-
-
-		// Memory initialization
-		d.Command(COLMOD)                 // Set color mode
-		d.Data(0x55)                      //   16-bit color
-		time.Sleep(10 * time.Millisecond) //
 	}
-	
+
+	// Set color mode. Sent unconditionally (even on warm boot) so the wire
+	// format always matches d.pixelFormat. 0x55 = 16bpp RGB565, 0x53 = 12bpp
+	// RGB444.
+	d.Command(COLMOD)
+	if d.pixelFormat == PIXFMT_RGB444 {
+		d.Data(0x53) // 12-bit color (RGB444)
+	} else {
+		d.Data(0x55) // 16-bit color (RGB565)
+	}
+	time.Sleep(10 * time.Millisecond)
+
 	d.SetRotation(d.rotation) // Memory orientation
 	
 	d.setWindow(0, 0, d.width, d.height)   // Full draw window
@@ -583,6 +601,10 @@ func (d *Device) fillRectangleWithImageOriginal(width, height int16, fb *image.R
 // handful of byte ops plus a store. The DC line is set once for the entire
 // stream rather than per batch.
 func (d *Device) streamImage(width, height int16, fb *image.RGBA, scratch []uint8, batchLen int32) error {
+	if d.pixelFormat == PIXFMT_RGB444 {
+		return d.streamImage444(width, height, fb, scratch, batchLen)
+	}
+
 	d.BeginTransaction()
 
 	// Hold the data line high for the whole pixel stream; touching the DC GPIO
@@ -628,6 +650,80 @@ func (d *Device) streamImage(width, height int16, fb *image.RGBA, scratch []uint
 	}
 
 	// End CS transaction
+	d.EndTransaction()
+	return nil
+}
+
+// streamImage444 streams an image as 12-bit RGB444 (BGR order to match the
+// panel's BGR wiring): two pixels pack into three bytes, so 25% fewer bytes go
+// over the SPI bus than RGB565. Each pixel contributes 4-bit B,G,R nibbles;
+// the byte layout the GC9307 expects for a pixel pair (P0,P1) is:
+//
+//	byte0 = B0 G0      (B0 high nibble, G0 low nibble)
+//	byte1 = R0 B1
+//	byte2 = G1 R1
+//
+// Pixels are paired within a row (region widths here are even). If a row has an
+// odd pixel count the trailing pixel is emitted as 1.5 bytes by flushing its
+// half-byte into a final byte; callers use even widths so this path is rare.
+func (d *Device) streamImage444(width, height int16, fb *image.RGBA, scratch []uint8, batchLen int32) error {
+	d.BeginTransaction()
+	d.dcPin.Out(gpio.High)
+
+	pix := fb.Pix
+	stride := fb.Stride
+	b := fb.Bounds()
+	w := int(width)
+	rowBytes := w * 4
+
+	// Keep batches a multiple of 3 bytes so a flush never splits a pixel-pair
+	// triplet across transfers.
+	batchBytes := int(batchLen) * 2
+	if batchBytes < 3 {
+		batchBytes = 3
+	}
+	maxOut := (batchBytes / 3) * 3
+	if maxOut > len(scratch) {
+		maxOut = (len(scratch) / 3) * 3
+	}
+
+	out := 0
+	rowStart := b.Min.Y*stride + b.Min.X*4
+	for row := 0; row < int(height); row++ {
+		sp := rowStart
+		end := rowStart + rowBytes
+		// Process full pixel pairs.
+		for sp+8 <= end {
+			r0, g0, b0 := pix[sp], pix[sp+1], pix[sp+2]
+			r1, g1, b1 := pix[sp+4], pix[sp+5], pix[sp+6]
+			scratch[out] = (b0 & 0xF0) | (g0 >> 4)
+			scratch[out+1] = (r0 & 0xF0) | (b1 >> 4)
+			scratch[out+2] = (g1 & 0xF0) | (r1 >> 4)
+			out += 3
+			sp += 8
+			if out == maxOut {
+				d.bus.Tx(scratch[:out], nil)
+				out = 0
+			}
+		}
+		// Trailing odd pixel (only if width is odd): emit B,G then R in the
+		// high nibble of a third byte. Even widths never hit this.
+		if sp+4 <= end {
+			r0, g0, b0 := pix[sp], pix[sp+1], pix[sp+2]
+			scratch[out] = (b0 & 0xF0) | (g0 >> 4)
+			scratch[out+1] = (r0 & 0xF0)
+			out += 2
+			if out >= maxOut-1 {
+				d.bus.Tx(scratch[:out], nil)
+				out = 0
+			}
+		}
+		rowStart += stride
+	}
+	if out > 0 {
+		d.bus.Tx(scratch[:out], nil)
+	}
+
 	d.EndTransaction()
 	return nil
 }
